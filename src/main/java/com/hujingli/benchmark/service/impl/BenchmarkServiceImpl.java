@@ -1,55 +1,55 @@
 package com.hujingli.benchmark.service.impl;
 
 import com.hujingli.benchmark.service.BenchmarkService;
-import com.hujingli.benchmark.utils.ClassUtils;
 import com.hujingli.benchmark.utils.FileUtils;
-import com.hujingli.benchmark.utils.RuntimeUtils;
 import org.springframework.stereotype.Service;
-import org.springframework.util.ResourceUtils;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.net.MalformedURLException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
 @Service
 public class BenchmarkServiceImpl implements BenchmarkService {
 
+    /**
+     * 采取类似热部署的方式，即时加载jar文件并“部署”相关功能
+     * @param sqlFile sql文件
+     * @param configFile config文件
+     * @param jarFile jar文件
+     * @param className 类名
+     * @param methodName 方法名
+     * @return View
+     */
     @Override
-    public String doBenchmark(MultipartFile sqlFile, MultipartFile configFile, MultipartFile javaTarGzFile, String className, String methodName) {
+    public String doBenchmark(MultipartFile sqlFile, MultipartFile configFile, MultipartFile jarFile, String className, String methodName) {
         // 暂存文件
         String[] filePaths = new String[3];
-        String classPath = null;
         try {
-            classPath = new File(ResourceUtils.getURL("classpath:").getPath()).getPath();
-        } catch (FileNotFoundException e) {
-            e.printStackTrace();
-        }
-
-        try {
-            filePaths = storeFiles(sqlFile, configFile, javaTarGzFile);
+            filePaths = storeFiles(sqlFile, configFile, jarFile);
         } catch (IOException e) {
             e.printStackTrace();
         }
 
-        // 将javaTarGzFile解压至classpath
+        // 加载jar文件
+        ClassLoader jarClassLoader = null;
         try {
-            decompressJava(filePaths[2], classPath);
-        } catch (IOException e) {
+            jarClassLoader = loadJarFile(filePaths[2]);
+        } catch (MalformedURLException e) {
             e.printStackTrace();
         }
-
-        // 运行时编译用户传入的java文件(根据入口类编译)
-        runtimeCompile(classPath, className);
 
         // 进行类加载
+        Class<?> clz = null;
         try {
-            loadNewComeClass(className);
-        } catch (IOException e) {
+            clz = loadNewComeClass(jarClassLoader, className);
+        } catch (ClassNotFoundException e) {
             e.printStackTrace();
         }
+
+        System.out.println(clz + "=============");
 
         // 根据sqlFile文件建库建表插入数据
 
@@ -67,12 +67,12 @@ public class BenchmarkServiceImpl implements BenchmarkService {
      * 存储sql,config,java文件至指定文件夹下
      * @param sqlFile sql文件
      * @param configFile config文件
-     * @param javaTarGzFile java文件
+     * @param tarFile java文件
      * @return 存储后的路径数组(sql->config->java)
      * @throws IOException I/O异常
      */
-    private String[] storeFiles(MultipartFile sqlFile, MultipartFile configFile, MultipartFile javaTarGzFile) throws IOException {
-        String tmpFolderPath = FileUtils.getTmpFolderPath();
+    private String[] storeFiles(MultipartFile sqlFile, MultipartFile configFile, MultipartFile tarFile) throws IOException {
+        String tmpFolderPath = FileUtils.getTmpFolder().getPath();
         String[] paths = new String[3];
 
         // 存储sql文件
@@ -81,8 +81,8 @@ public class BenchmarkServiceImpl implements BenchmarkService {
         // 存储config文件
         paths[1] = storeFile(configFile, tmpFolderPath);
 
-        // 存储javaTarGz文件
-        paths[2]  = storeFile(javaTarGzFile, tmpFolderPath);
+        // 存储tar文件
+        paths[2]  = storeFile(tarFile, tmpFolderPath);
 
         return paths;
     }
@@ -107,40 +107,19 @@ public class BenchmarkServiceImpl implements BenchmarkService {
     }
 
     /**
-     * 将java代码解压至classpath下
-     * @param filePath java代码压缩文件地址
-     * @param classPath classpath
-     * @throws IOException I/O异常
+     * 加载tar文件
+     * @param jarFilePaths jar包地址数组
      */
-    private void decompressJava(String filePath, String classPath) throws IOException {
-        FileUtils.decompress(filePath, classPath);
-    }
-
-    /**
-     * 运行时编译java文件
-     * @param classPath classpath
-     * @param className 入口文件名称(包名.类名)
-     */
-    private void runtimeCompile(String classPath, String className) {
-        String classNameWithoutSuffix = null;
-        String regex = ".";
-        String replacement = "\\\\";
-        if (className.endsWith(".class") || className.endsWith(".java")) {
-            int lastDotIdx = className.lastIndexOf(".");
-            classNameWithoutSuffix = className.substring(0, lastDotIdx).replaceAll(regex, replacement);
-        }
-
-        String filePath = Paths.get(classPath, classNameWithoutSuffix).toString();
-
-        RuntimeUtils.compile(filePath);
+    private ClassLoader loadJarFile(String... jarFilePaths) throws MalformedURLException {
+        return FileUtils.jarClassLoader(jarFilePaths);
     }
 
     /**
      * 加载逻辑主类
      * @param className 类名
-     * @throws IOException I/O异常
+     * @throws ClassNotFoundException 类
      */
-    private void loadNewComeClass(String className) throws IOException {
+    private Class<?> loadNewComeClass(ClassLoader loader, String className) throws ClassNotFoundException {
         String classNameWithOutSuffix;
         String regex = ".";
         String replacement = "\\\\";
@@ -150,11 +129,8 @@ public class BenchmarkServiceImpl implements BenchmarkService {
         } else {
             classNameWithOutSuffix = className;
         }
-        int lastDotIdx = className.lastIndexOf(".");
 
-        String packageName = classNameWithOutSuffix.substring(0, lastDotIdx).replaceAll(regex, replacement);
-
-        ClassUtils.scanByPackage(packageName);
+        return loader.loadClass(classNameWithOutSuffix);
     }
 
 }
